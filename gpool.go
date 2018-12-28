@@ -201,7 +201,6 @@ func (p *Pool) BlockingGet(ctx context.Context) (*GConn, error) {
 		defer p.mu.Unlock()
 		p.createNum++
 		conn, err := factory(p.config.Network, p.config.Address)
-		fmt.Printf("LALALALA %v %v\n", conn, err)
 		if err != nil {
 			p.addRemainingSpace()
 			return nil, err
