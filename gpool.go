@@ -1,4 +1,4 @@
-package gpool
+package pool
 
 import (
 	"context"
@@ -9,8 +9,17 @@ import (
 	"time"
 )
 
-// PoolConfig used for config the connection pool
-type PoolConfig struct {
+var (
+	// ErrClosed is error which pool has been closed but still been used
+	ErrClosed = errors.New("pool has been closed")
+	// ErrNil is error which pool is nil but has been used
+	ErrNil = errors.New("pool is nil")
+)
+
+// Config used for config the connection pool
+type Config struct {
+	Network string
+	Address string
 	// InitCap of the connection pool
 	InitCap int
 	// Maxcap is max connection number of the pool
@@ -19,44 +28,46 @@ type PoolConfig struct {
 	WaitTimeout time.Duration
 	// IdleTimeout is the timeout for a connection to be alive
 	IdleTimeout time.Duration
-	Factory     func() (net.Conn, error)
 }
 
-//gPool store connections and pool info
-type gPool struct {
-	conns      chan net.Conn
-	factory    Factory
-	mu         sync.RWMutex
-	poolConfig *PoolConfig
-	idleConns  int
-	createNum  int
+//Pool store connections and pool info
+type Pool struct {
+	conns     chan net.Conn
+	factory   Factory
+	mu        sync.RWMutex
+	config    *Config
+	idleConns int
+	createNum int
 	//will be used for blocking calls
 	remainingSpace chan bool
 }
 
 // Factory generate a new connection
-type Factory func() (net.Conn, error)
+type Factory func(network, address string) (net.Conn, error)
 
-func (p *gPool) addRemainingSpace() {
+func (p *Pool) addRemainingSpace() {
 	p.remainingSpace <- true
 }
 
-func (p *gPool) removeRemainingSpace() {
+func (p *Pool) removeRemainingSpace() {
 	<-p.remainingSpace
 }
 
-// NewGPool create a connection pool
-func NewGPool(pc *PoolConfig) (Pool, error) {
+// New create a connection pool
+func New(pc *Config) (*Pool, error) {
 	// test initCap and maxCap
 	if pc.InitCap < 0 || pc.MaxCap < 0 || pc.InitCap > pc.MaxCap {
 		return nil, errors.New("invalid capacity setting")
 	}
-	p := &gPool{
+	p := &Pool{
 		conns:          make(chan net.Conn, pc.MaxCap),
-		factory:        pc.Factory,
-		poolConfig:     pc,
+		config:         pc,
 		idleConns:      pc.InitCap,
 		remainingSpace: make(chan bool, pc.MaxCap),
+	}
+
+	p.factory = func(network, address string) (net.Conn, error) {
+		return net.Dial(network, address)
 	}
 
 	//fill the remainingSpace channel so we can use it for blocking calls
@@ -66,7 +77,7 @@ func NewGPool(pc *PoolConfig) (Pool, error) {
 
 	// create initial connection, if wrong just close it
 	for i := 0; i < pc.InitCap; i++ {
-		conn, err := pc.Factory()
+		conn, err := p.factory(pc.Network, pc.Address)
 		p.removeRemainingSpace()
 		if err != nil {
 			p.Close()
@@ -80,14 +91,14 @@ func NewGPool(pc *PoolConfig) (Pool, error) {
 }
 
 // wrapConn wraps a standard net.Conn to a poolConn net.Conn.
-func (p *gPool) wrapConn(conn net.Conn) net.Conn {
+func (p *Pool) wrapConn(conn net.Conn) *GConn {
 	gconn := &GConn{p: p}
 	gconn.Conn = conn
 	return gconn
 }
 
 // getConnsAndFactory get conn channel and factory by once
-func (p *gPool) getConnsAndFactory() (chan net.Conn, Factory) {
+func (p *Pool) getConnsAndFactory() (chan net.Conn, Factory) {
 	p.mu.RLock()
 	conns := p.conns
 	factory := p.factory
@@ -97,7 +108,7 @@ func (p *gPool) getConnsAndFactory() (chan net.Conn, Factory) {
 
 // Return return the connection back to the pool. If the pool is full or closed,
 // conn is simply closed. A nil conn will be rejected.
-func (p *gPool) Return(conn net.Conn) error {
+func (p *Pool) Return(conn net.Conn) error {
 	if conn == nil {
 		return errors.New("connection is nil. rejecting")
 	}
@@ -124,7 +135,7 @@ func (p *gPool) Return(conn net.Conn) error {
 
 // Get implement Pool get interface
 // if don't have any connection available, it will try to new one
-func (p *gPool) Get() (net.Conn, error) {
+func (p *Pool) Get() (*GConn, error) {
 	conns, factory := p.getConnsAndFactory()
 	if conns == nil {
 		return nil, ErrNil
@@ -146,10 +157,10 @@ func (p *gPool) Get() (net.Conn, error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.createNum++
-		if p.createNum > p.poolConfig.MaxCap {
+		if p.createNum > p.config.MaxCap {
 			return nil, errors.New("More than MaxCap")
 		}
-		conn, err := factory()
+		conn, err := factory(p.config.Network, p.config.Address)
 		p.removeRemainingSpace()
 
 		if err != nil {
@@ -164,7 +175,7 @@ func (p *gPool) Get() (net.Conn, error) {
 // BlockingGet will block until it gets an idle connection from pool. Context timeout can be passed with context
 // to wait for specific amount of time. If nil is passed, this will wait indefinitely until a connection is
 // available.
-func (p *gPool) BlockingGet(ctx context.Context) (net.Conn, error) {
+func (p *Pool) BlockingGet(ctx context.Context) (*GConn, error) {
 	conns, factory := p.getConnsAndFactory()
 	if conns == nil {
 		return nil, ErrNil
@@ -189,7 +200,8 @@ func (p *gPool) BlockingGet(ctx context.Context) (net.Conn, error) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.createNum++
-		conn, err := factory()
+		conn, err := factory(p.config.Network, p.config.Address)
+		fmt.Printf("LALALALA %v %v\n", conn, err)
 		if err != nil {
 			p.addRemainingSpace()
 			return nil, err
@@ -204,7 +216,7 @@ func (p *gPool) BlockingGet(ctx context.Context) (net.Conn, error) {
 
 // Close implement Pool close interface
 // it will close all the connection in the pool
-func (p *gPool) Close() {
+func (p *Pool) Close() {
 	p.mu.Lock()
 	conns := p.conns
 	p.conns = nil
@@ -224,14 +236,14 @@ func (p *gPool) Close() {
 
 // Len implement Pool Len interface
 // it will return current length of the pool
-func (p *gPool) Len() int {
+func (p *Pool) Len() int {
 	conns, _ := p.getConnsAndFactory()
 	return len(conns)
 }
 
 // Idle implement Pool Idle interface
 // it will return current idle length of the pool
-func (p *gPool) Idle() int {
+func (p *Pool) Idle() int {
 	p.mu.Lock()
 	idle := p.idleConns
 	p.mu.Unlock()

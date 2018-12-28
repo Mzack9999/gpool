@@ -1,4 +1,4 @@
-package gpool
+package pool
 
 import (
 	"net"
@@ -10,7 +10,7 @@ type GConn struct {
 	// wrap real connection
 	net.Conn
 	// gpool
-	p *gPool
+	p *Pool
 	//sync pool put or get
 	mu sync.RWMutex
 	// identify an GConn usable or can close
