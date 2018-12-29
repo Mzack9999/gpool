@@ -3,6 +3,8 @@ package pool
 import (
 	"net"
 	"sync"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // GConn wrap net.Conn to borrow or return conn
@@ -22,6 +24,11 @@ func (g *GConn) Close() error {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
+	log.WithFields(log.Fields{
+		"Connection Id": g.Conn,
+		"Address":       g.Conn.RemoteAddr(),
+	}).Info("Closing connection")
+
 	if g.unusable {
 		if g.Conn != nil {
 			g.p.addRemainingSpace()
@@ -34,6 +41,11 @@ func (g *GConn) Close() error {
 
 // MarkUnusable marks the connection not usable any more, to let the pool close it instead of returning it to pool.
 func (g *GConn) MarkUnusable() {
+	log.WithFields(log.Fields{
+		"Connection Id": g.Conn,
+		"Address":       g.Conn.RemoteAddr(),
+		"Mark":          "Unusable",
+	}).Info("Marking connection")
 	g.mu.Lock()
 	g.unusable = true
 	g.mu.Unlock()

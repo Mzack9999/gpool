@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -77,6 +79,10 @@ func New(pc *Config) (*Pool, error) {
 
 	// create initial connection, if wrong just close it
 	for i := 0; i < pc.InitCap; i++ {
+		log.WithFields(log.Fields{
+			"Network": pc.Network,
+			"Address": pc.Address,
+		}).Info("Creating connection")
 		conn, err := p.factory(pc.Network, pc.Address)
 		p.removeRemainingSpace()
 		if err != nil {
@@ -92,6 +98,10 @@ func New(pc *Config) (*Pool, error) {
 
 // wrapConn wraps a standard net.Conn to a poolConn net.Conn.
 func (p *Pool) wrapConn(conn net.Conn) *GConn {
+	log.WithFields(log.Fields{
+		"Connection Id": conn,
+		"Address":       conn.RemoteAddr(),
+	}).Info("Wrapping connection")
 	gconn := &GConn{p: p}
 	gconn.Conn = conn
 	return gconn
@@ -110,6 +120,11 @@ func (p *Pool) getConnsAndFactory() (chan net.Conn, Factory) {
 // conn is simply closed. A nil conn will be rejected.
 func (p *Pool) Return(conn net.Conn) error {
 	if conn == nil {
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Error":         "connection is nil. rejecting",
+		}).Info("Returning connection to pool")
 		return errors.New("connection is nil. rejecting")
 	}
 
@@ -117,6 +132,11 @@ func (p *Pool) Return(conn net.Conn) error {
 	defer p.mu.Unlock()
 
 	if p.conns == nil {
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Error":         "pool is closed, close passed connection",
+		}).Info("Pool closed")
 		// pool is closed, close passed connection
 		return conn.Close()
 	}
@@ -129,6 +149,11 @@ func (p *Pool) Return(conn net.Conn) error {
 		return nil
 	default:
 		// pool is full, close passed connection
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Error":         "pool is full, close passed connection",
+		}).Info("Pool Full")
 		return conn.Close()
 	}
 }
@@ -140,7 +165,6 @@ func (p *Pool) Get() (*GConn, error) {
 	if conns == nil {
 		return nil, ErrNil
 	}
-
 	// wrap our connections with out custom net.Conn implementation (wrapConn
 	// method) that puts the connection back to the pool if it's closed.
 	select {
@@ -148,7 +172,11 @@ func (p *Pool) Get() (*GConn, error) {
 		if conn == nil {
 			return nil, ErrClosed
 		}
-
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Status":        "found existing connection",
+		}).Info("Get Connection")
 		p.mu.Lock()
 		p.idleConns--
 		p.mu.Unlock()
@@ -161,8 +189,12 @@ func (p *Pool) Get() (*GConn, error) {
 			return nil, errors.New("More than MaxCap")
 		}
 		conn, err := factory(p.config.Network, p.config.Address)
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Status":        "no connection found, creating new one",
+		}).Info("Get Connection")
 		p.removeRemainingSpace()
-
 		if err != nil {
 			p.addRemainingSpace()
 			return nil, err
@@ -184,6 +216,7 @@ func (p *Pool) BlockingGet(ctx context.Context) (*GConn, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	// wrap our connections with out custom net.Conn implementation (wrapConn
 	// method) that puts the connection back to the pool if it's closed.
 	select {
@@ -191,7 +224,11 @@ func (p *Pool) BlockingGet(ctx context.Context) (*GConn, error) {
 		if conn == nil {
 			return nil, ErrClosed
 		}
-
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Status":        "found existing connection",
+		}).Info("BlockingGet Connection")
 		p.mu.Lock()
 		p.idleConns--
 		p.mu.Unlock()
@@ -205,7 +242,11 @@ func (p *Pool) BlockingGet(ctx context.Context) (*GConn, error) {
 			p.addRemainingSpace()
 			return nil, err
 		}
-
+		log.WithFields(log.Fields{
+			"Connection Id": conn,
+			"Address":       conn.RemoteAddr(),
+			"Status":        "no connection found, creating new one",
+		}).Info("BlockingGet Connection")
 		return p.wrapConn(conn), nil
 	//if context deadline is reached, return timeout error
 	case <-ctx.Done():
